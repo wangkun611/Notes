@@ -15,13 +15,17 @@ namespace是一个抽象概念，用来隔离Linux的全局系统资源。处于
 
 除了的`/proc`目录的下各种文件提供Namespace信息外，Linux提供了以下四种系统调用API：
  - clone: 创建一个子进程. 如果，`flags`参数指定了上面的一种或者几种`CLONE_NEW*`标记, 则新建flag对应的namespace，并且把子进程添加的新建的namespace中.
- - setns: 当前进程加入到已经存在的namespace. 通过`/proc/[pid]/ns`文件指定需要加入的namespace. 从5.8开始, 内核支持把当前进程加入到某个PID相同的namespace中. 
+ - setns: 当前进程加入到已经存在的namespace. 通过`/proc/[pid]/ns`文件指定需要加入的namespace. 从5.8开始, 内核支持把当前进程加入到某个进程所在的namespace中. 
  - unshare: 字面理解不和其他进程共享namespace, 就是把当前进程加入到新建的namespace中. 
  - ioctl: 获取namespace信息
 
 ### ioctl_ns 
 
-主要以下三种用法：
+函数原型如下：
+```C
+int ioctl(int fd, unsigned long request, ...);
+```
+这是个万能函数，具体到namespace方面，主要以下三种用法：
 1. 获取namespace的之间的关系, 调用方式是 `new_fd = ioctl(fd, request);`, fd指向`/proc/[pid]/ns/*`文件. 如果成功，将返回新fd. `NS_GET_USERNS`获取fd指向的namespace的所有者user namespace. `NS_GET_PARENT`获取fd指向的namespace的父namespace，首先fd必须是有层级关系的namespace(PID, User). 
 2. 获取namespace的类型，调用方式是`nstype = ioctl(fd, NS_GET_NSTYPE);`,返回`CLONE_NEW*`
 3. 获取user namespace的所有者id, 调用方式`uid_t uid;errno=ioctl(fd, NS_GET_OWNER_UID, &uid);`. fd必须指向`/proc/[pid]/ns/user`文件.
@@ -32,10 +36,34 @@ namespace是一个抽象概念，用来隔离Linux的全局系统资源。处于
 
 函数原型如下：
 ```C
-    int clone(int (*fn)(void *), void *stack, int flags, void *arg, ...
-    /* pid_t *parent_tid, void *tls, pid_t *child_tid */ );
+int clone(int (*fn)(void *), void *stack, int flags, void *arg, ...
+/* pid_t *parent_tid, void *tls, pid_t *child_tid */ );
 ```
+`clone`创建一个子进程，子进程从`fn`开始执行，`stack`指向子进程主线程的栈顶，`flags`控制子进程和父进程共享的资源，`arg`透传给`fn`. 和`fork`相比，主要就是`flags`参数的区别，使用`flags`可以控制子进程是否共享父进程的虚拟内存空间、文件描述符、信号处理句柄等等. 通过设置`CLONE_NEW*`标记，同时创建namespace，并把子进程添加到新建的namespace中. 
+注意：通过`flags`组合，`clone`也是创建线程的系统调用. 
+
+### unshare
+
+函数原型如下：
+```C
+int unshare(int flags);
+```
+创建一个新的namespace，并把当前进程加入到namespace中. 
+有几个注意点：
+1. `CLONE_NEWPID`给所有子进程创建PID namespace，当前进程的PID namespace保持不变. **必须是单线程的进程才能使用这个标记.** 
+2. `CLONE_NEWUSER` **必须是单线程的进程才能使用这个标记.** 
+
+### setns
+
+函数原型如下：
+```C
+int setns(int fd, int nstype);
+```
+当前进程加入到`fd`指向的namespace中. `fd`可以指向`/proc/[pid]/ns/`,从5.8开始，也可以是PID fd.
 
 参考：
 1. https://man7.org/linux/man-pages/man7/namespaces.7.html
 2. https://man7.org/linux/man-pages/man2/ioctl_ns.2.html
+3. https://man7.org/linux/man-pages/man2/clone.2.html
+4. https://man7.org/linux/man-pages/man2/unshare.2.html
+5. https://man7.org/linux/man-pages/man2/setns.2.html
