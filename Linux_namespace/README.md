@@ -1,4 +1,4 @@
-## Namespace 简介
+# Namespace 简介
 
 namespace是一个抽象概念，用来隔离Linux的全局系统资源。处于相同namespace的进程可以看到相同的资源，该资源对于其他namespace的进程是不可见的。目前(5.13)提供了8种不同的namespace。
 
@@ -11,7 +11,7 @@ namespace是一个抽象概念，用来隔离Linux的全局系统资源。处于
 - User, CLONE_NEWUSER: 用户和用户组
 - UTS, CLONE_NEWUTS: 主机名和NIS域名
 
-### Namespce API
+## Namespce API
 
 除了的`/proc`目录的下各种文件提供Namespace信息外，Linux提供了以下四种系统调用API：
  - clone: 创建一个子进程. 如果，`flags`参数指定了上面的一种或者几种`CLONE_NEW*`标记, 则新建flag对应的namespace，并且把子进程添加的新建的namespace中.
@@ -61,9 +61,41 @@ int setns(int fd, int nstype);
 ```
 当前进程加入到`fd`指向的namespace中. `fd`可以指向`/proc/[pid]/ns/`,从5.8开始，也可以是PID fd.
 
+## PID namespace
+PID namespace用来隔离进程id空间，也就是在不同PID namespace的进程可以有相同的进程id. 
+
+### 初始进程
+PID namespace中的第一个进程(clone和unshare有差异)是初始进程，pid是1。这个进程是所有孤儿进程的父进程。初始进程退出后，内核会杀死namespace中的所有其他进程,并且该namespace不允许在创建新进程(错误码: `ENOMEM`)。
+
+内核对初始进程有保护机制，屏蔽namespace中其他进程发给初始进程，但是初始进程不会处理的信号，防止初始进程被无意杀死。同样屏蔽来自祖先namespace进程的，初始进程不处理的信号，但是`SIGKILL`和`SIGSTOP`除外，让祖先namespace中的进程可以关闭这个namespace。
+
+### 嵌套PID namespace
+PID namespace是嵌套关系，除了`root`PID namespace,都有父namespace，可以想象成是一个多叉树结构，`NS_GET_PARENT ioctl`可以获取父namespace。从3.7开始，树最大高32。进程可以看见同namespace和后代namespace的进程，看不见祖先namespace进程。同一个进程在不同namespace中的PID是不一样的。和父进程不在同一个namespace的进程获取的`ppid`是0。进程所在的namespace可以往下(后代)移，但是不能往上(祖先)方向移。
+
+### setns(2) 和 unshare(2)
+进程的PID始终不变。调用这两个函数后，子进程会进入新namespace。`/proc/[pid]/ns/pid_for_children`指向子进程的PID namespace。`unshare`只能调用一遍，调用后`/proc/[pid]/ns/pid_for_children`指向`null`，在创建子进程后，指向新的namespace。
+
+## 其他
+通过UNIX域套接字通信，内核会把发送方的pid转成在接收方namespace中的pid。有个问题：假如发送方在接收方namespace不可见，内核在接收方namespace中生成一个pid，还是其他方案？
+
+## 演示
+我写了个实例代码，输出pid和ppid，如下：
+```
+# ./pid
+99049
+59284
+# unshare --pid --fork ./pid
+1
+0
+```
+第一次指向`./pid`，输出新建进程的id和父进程的id。第二次使用unshare新建namespace，在新namespace中执行`./pid`，输出1和0。
+
+
+
 参考：
 1. https://man7.org/linux/man-pages/man7/namespaces.7.html
 2. https://man7.org/linux/man-pages/man2/ioctl_ns.2.html
 3. https://man7.org/linux/man-pages/man2/clone.2.html
 4. https://man7.org/linux/man-pages/man2/unshare.2.html
 5. https://man7.org/linux/man-pages/man2/setns.2.html
+6. https://man7.org/linux/man-pages/man7/pid_namespaces.7.html
