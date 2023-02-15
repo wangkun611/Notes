@@ -69,6 +69,8 @@ PID namespace中的第一个进程(clone和unshare有差异)是初始进程，pi
 
 内核对初始进程有保护机制，屏蔽namespace中其他进程发给初始进程，但是初始进程不会处理的信号，防止初始进程被无意杀死。同样屏蔽来自祖先namespace进程的，初始进程不处理的信号，但是`SIGKILL`和`SIGSTOP`除外，让祖先namespace中的进程可以关闭这个namespace。
 
+关于优雅关闭容器的建议：初始进程捕获`SIGTERM`,并把信号转发给子进程，等待子进程退出后，
+
 ### 嵌套PID namespace
 PID namespace是嵌套关系，除了`root`PID namespace,都有父namespace，可以想象成是一个多叉树结构，`NS_GET_PARENT ioctl`可以获取父namespace。从3.7开始，树最大高32。进程可以看见同namespace和后代namespace的进程，看不见祖先namespace进程。同一个进程在不同namespace中的PID是不一样的。和父进程不在同一个namespace的进程获取的`ppid`是0。进程所在的namespace可以往下(后代)移，但是不能往上(祖先)方向移。
 
@@ -90,6 +92,37 @@ PID namespace是嵌套关系，除了`root`PID namespace,都有父namespace，�
 ```
 第一次指向`./pid`，输出新建进程的id和父进程的id。第二次使用unshare新建namespace，在新namespace中执行`./pid`，输出1和0。
 
+## User namespace
+User namespace用来隔离安全相关的标识符和属性，特别是 用户id(user ids)、组id(group ids)、根目录(root director)、密钥(keyrings)、特权能力(capabilities)。在 user namespace内和外，一个进程可以是不同的用户id和组id。特别地，在User namespace内，进程可以是特性用户id 0，在namespace外，是其他的正常用户id；也就是，在namespace内，进程拥有完整的特权，可以操作namespace内的其他资源，在namespace外，该进程没有特权，仅仅是一个普通进程。
+
+### 嵌套 namespace
+User namespace可以嵌套；每个namespace，除了初始的(root)namespace，都有一个父namespace和0或多个子namespace。通过CLONE_NEWUSER标识创建User namespace的进程所在的User namesapce就是新建namespace的父namespace。这一点，User namespace和PID namespace是一样的。从Kernel 3.11开始，最大嵌套深度是32。
+
+每个进程只能属于一个User namespace。子进程默认继承父进程的User namespace。单线程进程可以通过`setns`函数加入到其他User namespace，该进程在User namespace中必须有`CAP_SYS_ADMIN`权限。
+
+### 能力(Capabilities)
+通过`CLONE_NEWUSER`创建的进程在新的namespace中拥有root权限，但是它在父namespace中没有任何能力。假如进程需要访问namespace外的资源，也仅仅是一个普通用户。系统有一系列的手段限制namspace中的进程能力，防止出现能力逃逸。
+
+当`CLONE_NEWUSER`和其他`CLONE_NEW*`同时指定时，User namespace首先被创建的，然后以新建的User namespace为oner在创建其他的namespace。
+
+### 用户和组ID映射
+Linux通过在父子nanmespace间建立uid和gid的映射来管理相关的资源。在User namespace创建时，uid和gid映射都是空的，这是获取到uid通常是65534。`/proc/[pid]/uid_map`和`/proc/[pid]/gid_map`暴露映射关系，这两个文件**只能写入一次**。这两个文件的每一行表示一对一的映射范围，每一行有三个数字，每个数字使用空格分隔。
+```
+ID_inside-ns   ID-outside-ns   length
+```
+每个字段的说明如下：
+
+1. 在`pid`所在的namespace内部，映射id范围的开始值
+2. 分两种情况
+
+    2.1. 打开uid_map的进程和pid处于不同的User namespace，ID_inside-ns<->ID-outside-ns表示uid在两个namespace的映射关系。所以，不同的User namespace的进程查看相同的uid_map,可能是不一样的。
+    2.2 打开uid_map的进程和pid处于同一个User namespace，ID_inside-ns<->ID-outside-ns表示uid在父子User namespace之间的映射关系。
+
+3. 映射的长度
+
+只能当前User namespace的进程和父User namespace的进程有权限修改uid_map。除了上面的限制，为了安全还有其他的权限要求，具体的要求可以参考手册。
+
+当某个进程要访问User namespace外的资源时，uid、gid和资源的Credentials会映射到初始User namespace中，然后在判断，进程是否有权限访问资源。
 
 
 参考：
@@ -99,3 +132,4 @@ PID namespace是嵌套关系，除了`root`PID namespace,都有父namespace，�
 4. https://man7.org/linux/man-pages/man2/unshare.2.html
 5. https://man7.org/linux/man-pages/man2/setns.2.html
 6. https://man7.org/linux/man-pages/man7/pid_namespaces.7.html
+7. https://man7.org/linux/man-pages/man7/user_namespaces.7.html
