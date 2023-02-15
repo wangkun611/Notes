@@ -120,9 +120,16 @@ ID_inside-ns   ID-outside-ns   length
 
 3. 映射的长度
 
-只能当前User namespace的进程和父User namespace的进程有权限修改uid_map。除了上面的限制，为了安全还有其他的权限要求，具体的要求可以参考手册。
+修改uid_map有很多权限要求：
 
-当某个进程要访问User namespace外的资源时，uid、gid和资源的Credentials会映射到初始User namespace中，然后在判断，进程是否有权限访问资源。
+1. 只能当前User namespace的进程和父User namespace的进程有权限修改uid_map。
+2. 不能映射没有从父User namespace中映射过来的uid区间给子User namespace。
+3. 非特权（没有CAP_SETUID能力）进程只能映射当前uid给子User namespace
+
+除了上面的限制，为了安全还有其他的权限要求，这些安全限制为了防止进程把自己没有权限访问的资源传递给子User namespace中的进程，具体的要求可以参考手册。
+
+当某个非特权进程要访问文件时，uid、gid和文件的Credentials会映射到初始User namespace中，然后在判断，进程是否有权限访问资源。其他不和User namespace绑定的系统资源，例如：修改系统时间、加载内核模块、创建设备等等，只有初始User namespace中进程才有权限。User namespace中的CAP_SYS_ADMIN是有非常多限制的。
+
 
 
 参考：
