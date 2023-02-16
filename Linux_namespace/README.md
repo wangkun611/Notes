@@ -130,6 +130,42 @@ ID_inside-ns   ID-outside-ns   length
 
 当某个非特权进程要访问文件时，uid、gid和文件的Credentials会映射到初始User namespace中，然后在判断，进程是否有权限访问资源。其他不和User namespace绑定的系统资源，例如：修改系统时间、加载内核模块、创建设备等等，只有初始User namespace中进程才有权限。User namespace中的CAP_SYS_ADMIN是有非常多限制的。
 
+进程加入User namespace后，特权被剥夺光了，似乎也没有判断授权，如果没有Network namespace，ping也没有权限。
+
+## Mount namespace
+`Mount namespace`用来隔离文件系统的挂载点。不同`Mount namespace`的进程有不同的文件系统目录结构。`/proc/[pid]/mounts`,`/proc/[pid]/mountinfo`和`/proc/[pid]/mountstats`,可以通过这三个文件看到进程的挂载信息,也就是进程所在的`Mount namespace`的挂载信息。新`Mount namespace`的初始挂载点拷贝自创建它的进程所在的`Mount namespace`。
+
+### mount 的概念
+比如说，Linux系统上安装了一些存储设备，例如：硬盘、U盘、光驱等等，在没有挂载之前，你可以在 `/dev/`目录下看到这个设备，或者通过`fdisk`查看设备。如果你想以文件目录的方式访问设备，就需要使用挂载。使用系统命令`mount`完成挂载。命令用法如下：
+```
+mount [-fnrsvw] [-t vfstype] [-o options] device dir
+```
+`device`表示设备号，`dir`表示要挂载到那个目录。
+
+例如插入U盘后，`/dev/`多出来两个文件: `/dev/sdb`,`/dev/sdb1`,前一个表示U盘这个设备，后一个表示U盘上的第一个分区。如果U盘上有多个分区，还会出现`/dev/sdb2`等等。可以执行以下命令把U盘的第一个分区挂载到`/mnt/usb/`(iocharset=utf8表示使用utf8编码解析文件名)
+```
+mount -o iocharset=utf8 /dev/sdb1 /mnt/usb
+``` 
+同一个设备可以挂载到多个目录，一个目录也可以挂载多个设备。可以把目录的挂载信息当做栈，挂载就是入栈，取消挂载就是出栈，对目录的访问就是在访问栈顶的目录，当栈空时，访问真实的目录。
+
+### 挂载传播
+
+
+### 绑定挂载
+引入绑定挂载后，device可以是一个普通的文件或者目录。用法如下：
+```
+mount --bind source_file target_file
+```
+绑定挂载有点类似于硬链接，在切换根目录后，仍然可以访问到正确的文件（软链接在大概率是不能访问了）。在使用上，它们有几个区别如下：
+1. mount是非持久化的，系统重启后，需要重新挂载，ln是持久化的
+2. mount可以处理文件和目录，ln只能处理文件
+3. mount要求target_file必须存在，ln要求target_file不能存在
+4. mount的target_file不能删除，只能使用 umount 取消挂载，ln可以上传target_file
+5. source_file被删除后，当前session下，都可以访问target_file，系统重启后，mount的target_file不能访问了
+6. mount会根据传播机制在各个`Mount namespace`间共享，ln在所有`Mount namespace`间共享
+7. mount的source、target可以不在一个设备上，ln必须在一个设备上
+
+### 切换根目录
 
 
 参考：
@@ -140,3 +176,4 @@ ID_inside-ns   ID-outside-ns   length
 5. https://man7.org/linux/man-pages/man2/setns.2.html
 6. https://man7.org/linux/man-pages/man7/pid_namespaces.7.html
 7. https://man7.org/linux/man-pages/man7/user_namespaces.7.html
+8. https://man7.org/linux/man-pages/man7/mount_namespaces.7.html
