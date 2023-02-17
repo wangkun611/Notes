@@ -219,7 +219,25 @@ shm_open, mmap创建的共享内存：由于这两个技术使用的文件系统
 
 ## Time namespaces
 `Time namespaces`用来隔离单调时钟和启动时间，比较特殊的是这个namespace只能通过`unshare`来创建。
-通过修改`/proc/PID/timens_offsets`来修改系统的单调时钟和启动时间。该文件只能在初始进程里面修改，并且必须在没有创建第二个进程之前改。如果想让容器的启动时间从0开始，在容器启动时执行：`echo "boottime  -$((parent_uptime)) 0" > /proc/$$/timens_offsets`,其中`parent_uptime`是父namespace的运行时间。
+通过修改`/proc/PID/timens_offsets`来修改系统的单调时钟和启动时间。该文件只能在`Time namespace`中没有任何进程前修改，也就是说在进程调用`unshare`后，修改当前进程的`/proc/PID/timens_offsets`文件，然后在启动子进程。参考`unshare(1)`的源代码：
+```C
+static void settime(time_t offset, clockid_t clk_id)
+{
+	char buf[sizeof(stringify_value(ULONG_MAX)) * 3];
+	int fd, len;
+
+	len = snprintf(buf, sizeof(buf), "%d %" PRId64 " 0", clk_id, (int64_t) offset);
+
+	fd = open("/proc/self/timens_offsets", O_WRONLY);
+	if (fd < 0)
+		err(EXIT_FAILURE, _("failed to open /proc/self/timens_offsets"));
+
+	if (write(fd, buf, len) != len)
+		err(EXIT_FAILURE, _("failed to write to /proc/self/timens_offsets"));
+
+	close(fd);
+}
+```
 
 参考：
 1. https://man7.org/linux/man-pages/man7/namespaces.7.html
