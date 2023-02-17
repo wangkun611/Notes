@@ -77,10 +77,10 @@ PID namespace是嵌套关系，除了`root`PID namespace,都有父namespace，�
 ### setns(2) 和 unshare(2)
 进程的PID始终不变。调用这两个函数后，子进程会进入新namespace。`/proc/[pid]/ns/pid_for_children`指向子进程的PID namespace。`unshare`只能调用一遍，调用后`/proc/[pid]/ns/pid_for_children`指向`null`，在创建子进程后，指向新的namespace。
 
-## 其他
+### 其他
 通过UNIX域套接字通信，内核会把发送方的pid转成在接收方namespace中的pid。有个问题：假如发送方在接收方namespace不可见，内核在接收方namespace中生成一个pid，还是其他方案？
 
-## 演示
+### 演示
 我写了个实例代码，输出pid和ppid，如下：
 ```
 # ./pid
@@ -149,7 +149,13 @@ mount -o iocharset=utf8 /dev/sdb1 /mnt/usb
 同一个设备可以挂载到多个目录，一个目录也可以挂载多个设备。可以把目录的挂载信息当做栈，挂载就是入栈，取消挂载就是出栈，对目录的访问就是在访问栈顶的目录，当栈空时，访问真实的目录。
 
 ### 挂载传播
+为了照顾其他的使用场景，比如说插入U盘后，需要在所有`Mount namespace`中都可以访问，Linux从2.6.15引入了挂载传播机制。这种传播机制使得各个`Mount namespace`之间的`mount`事件可以互相传播，可以在各个`Mount namespace`之间共享挂载点。
 
+挂载点的传播类型：
+ - MS_SHARED: 共享的挂载点，在任何一个`Mount namespace`中修改，其他的`Mount namespace`都会生效
+ - MS_PRIVATE：默认类型，私有的挂载点，不和任何`Mount namespace`共享
+ - MS_SLAVE：单向传播，它可以接收master的挂载事件，但是它的事件不会传播给master。该挂载点同时也是另一个共享组的master，可以把挂载事件传给它的slave。
+ - MS_UNBINDABLE：首先是私有的，然后不能在被绑定挂载。该类型的主要目的是在递归绑定挂载时，防止挂载爆炸。
 
 ### 绑定挂载
 引入绑定挂载后，device可以是一个普通的文件或者目录。用法如下：
@@ -166,6 +172,40 @@ mount --bind source_file target_file
 7. mount的source、target可以不在一个设备上，ln必须在一个设备上
 
 ### 切换根目录
+根目录就是`/`代表的目录。子进程会继承父进程的根目录。介绍两种切换根目录的方式
+#### chroot （change root directory）
+ - 系统命令: `chroot [OPTION] NEWROOT [COMMAND [ARG]...]`
+ - 系统API：`int chroot(const char *path);`
+
+只改变当前进程的根目录，对其他进程没有影响。大概的实现原理为：内核在处理文件路径时，加上一层预处理，然后生产最终的文件路径，交给文件系统。举例说明：设置了 `/opt/busybox/`为根目录后，当前目录为`/etc`，需要访问`./passwd`文件，内核经过处理后的路径为`/opt/busybox/etc/passwd`。当然，内核已经堵住了想通过`../../`逃逸出`root`的做法。但是在手册上，对该函数的安全性持消极态度，所以，在沙箱场景上尽量避免使用该函数。
+
+#### pivot_root
+ - 系统命令： `pivot_root new_root put_old`
+ - 系统API: `int syscall(SYS_pivot_root, const char *new_root, const char *put_old);`
+
+改变当前`Mount namespace`中的根挂载。具体一点就是，先把`new_root`设置成根挂载，让把之前的根挂载移到`put_old`目录。和`chroot`相比，`pivot_root`之前在文件系统层面修改了根目录，更加的安全。如果在卸载`put_old`挂载点，就彻底无法访问原来的文件了。
+
+在使用方面，有几个要注意的点：
+1. 调用进程需要`CAP_SYS_ADMIN`权限，在`Mount namespace`的所有者`User namespace`中
+2. `new_root`必须是挂载点，不能是当前的根
+3. `pub_old`需要是`new_root`或者其子目录
+4. `new_root`和当前根目录，这两个目录的父挂载不能是共享的，`put_old`也不能是共享的挂载点
+
+#### 最佳实践
+我们使用busybox镜像来操作一下：
+1. 使用unshare创建namesapce: `unshare -m -p --fork`
+2. 进入busybox目录：`cd /opt/busybox`
+3. 为了保证busy是挂载点，执行一次挂载: `mount --bind /opt/busybox/ /opt/busybox/`
+4. 执行切换：`pivot_root . .`
+5. `/bin/umount .`
+6. `/bin/mount -t proc proc /proc`
+7. `cat /proc/self/mountinfo`
+
+    `162 126 253:0 /opt/busybox / rw,relatime - xfs /dev/mapper/centos-root rw,attr2,inode64,logbufs=8,logbsize=32k,noquota`
+    `163 162 0:5 / /proc rw,relatime - proc proc rw`
+
+8. 之前的挂载都卸载了
+
 
 
 参考：
