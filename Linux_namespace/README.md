@@ -206,7 +206,20 @@ mount --bind source_file target_file
 
 8. 之前的挂载都卸载了
 
+## UTS namespaces
+`UTS namespaces`用来隔离主机名和NIS域名，就是`hostname`、`domainname`两个命令获取和设置的字段。
 
+为什么需要有这个namespace呢？目前已经有一系列的基于主机名和NIS域名的主机管理软件，要保证这些软件可以在容器里面正常运行。我司在虚拟机时期，编写了大量基于主机名的脚本，这些脚本有日志收集、故障分析、代码部署等等，这些脚本就可以顺利迁移到容器中使用。
+
+## IPC namespaces
+`IPC namespaces`用来隔离System V IPC和POSIX消息队列。
+
+我比较其他的进程间通信通信方式是怎么隔离的?
+shm_open, mmap创建的共享内存：由于这两个技术使用的文件系统映射来实现共享内存的，所以`Mount namespace`完成了共享内存资源隔离。Linux一切皆文件，除了网络，其他进程间通信的方式都是通过文件系统来实现的，所以，`Mount namespace`就搞定了这些资源的隔离。要相信Linux内核团队。
+
+## Time namespaces
+`Time namespaces`用来隔离单调时钟和启动时间，比较特殊的是这个namespace只能通过`unshare`来创建。
+通过修改`/proc/PID/timens_offsets`来修改系统的单调时钟和启动时间。该文件只能在初始进程里面修改，并且必须在没有创建第二个进程之前改。如果想让容器的启动时间从0开始，在容器启动时执行：`echo "boottime  -$((parent_uptime)) 0" > /proc/$$/timens_offsets`,其中`parent_uptime`是父namespace的运行时间。
 
 参考：
 1. https://man7.org/linux/man-pages/man7/namespaces.7.html
