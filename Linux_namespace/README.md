@@ -219,7 +219,21 @@ shm_open, mmap创建的共享内存：由于这两个技术使用的文件系统
 
 ## Time namespaces
 `Time namespaces`用来隔离单调时钟和启动时间，比较特殊的是这个namespace只能通过`unshare`来创建。
-通过修改`/proc/PID/timens_offsets`来修改系统的单调时钟和启动时间。该文件只能在`Time namespace`中没有任何进程前修改，也就是说在进程调用`unshare`后，修改当前进程的`/proc/PID/timens_offsets`文件，然后在启动子进程。参考`unshare(1)`的源代码：
+通过修改`/proc/PID/timens_offsets`来修改系统的单调时钟和启动时间。该文件只能在`Time namespace`中没有任何进程前修改，也就是说在进程调用`unshare`后，修改当前进程的`/proc/PID/timens_offsets`文件，然后在启动子进程。`timens_offsets`的格式如下：
+```
+<clock-id> <offset-secs> <offset-nanosecs>
+```
+`clock-id`有两种值： `monotonic`表示单调时钟，`boottime`表示启动时间。`offset-secs`可以是正负值，`offset-nanosecs`只能是正值。这两个偏移都是针对初始`Time namespace`的，不是当前创建`Time namespace`的进程，这点要特别注意。
+
+模拟一个需求：在容器内的启动时间从0开始，模拟系统刚刚启动
+1. `uptime --pretty`,获取当前`Time namespace`的启动时间，把启动时间转换成秒，比如：3600秒
+2. 读取`/proc/self/timens_offsets`文件中，`boottime`内容，然后取负值
+3. 调用`unshare`创建`Time namespace`
+3. 把1和2获取的值，相加，再取负值后，写入到`/proc/self/timens_offsets`的`bootime`中
+
+`clock_times`例子可以快速的帮忙计算启动时间。
+
+参考`unshare(1)`的源代码：
 ```C
 static void settime(time_t offset, clockid_t clk_id)
 {
@@ -239,6 +253,187 @@ static void settime(time_t offset, clockid_t clk_id)
 }
 ```
 
+## Network namespace
+`Network namespace`用来隔离网络相关的资源，比如说：网络设备、IPv4和IPv6协议栈、IP Tables、防火墙、`/proc/net`目录、`/sys/class/net`目录、`/proc/sys/net`目录下的各种文件、端口号等等。另外，`Network namespace`还可以隔离 unix socket。
+
+通过创建进程创建的namespace，namespace中最后一个进程退出且没有进程引用namesapce后，namespace会自动销毁。
+
+物理网络设备只能存在于一个`network namespace`。如果`network namespace`被销毁，那么它的物理网络设备将会移到初始（Root）`network namespace`中。
+
+每一个namespace都是独立的，namespace中的进程要怎么和外界通信呢？我们这边介绍两种方法：
+
+首先说下我的测试环境：VMWare虚机，Centos 9，内核5.14，双网卡(ens33,ens37)，网关192.168.192.2
+
+
+### 方法一：就是把物理网卡移到namespace中
+
+1. 创建network namespace，
+    ``` shell
+    [root@localhost ~]# PS1="netns# " unshare -m -n --fork
+    netns# 
+    ```
+2. 测试网络功能,显而易见的，网络不可达
+    ``` shell
+    netns# ping 8.8.8.8
+    ping: connect: Network is unreachable
+    netns# ping 127.0.0.1
+    ping: connect: Network is unreachable
+    ```
+3. 启用`lo`网络,可以使用127.0.0.1
+    ``` shell
+    netns# ip link set lo up
+    netns# ping 127.0.0.1
+    PING 127.0.0.1 (127.0.0.1) 56(84) bytes of data.
+    64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time=0.096 ms
+    ```
+4. 查看`bash`的pid,在下面的指令中，使用 34634 指代`network namespace`
+    ``` shell
+    netns# echo $$
+    34634
+    ```
+5. 在打开一个root权限的Terminal,可以看机器上有一个`lo`和两块网卡设备。注意：如果还在namespace的Terminal中，只能看到一个`lo`设备
+    ``` shell
+    [root@localhost ~]# ip link
+    1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000
+        link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    2: ens33: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP mode DEFAULT group default qlen 1000
+        link/ether 00:0c:29:d8:90:3c brd ff:ff:ff:ff:ff:ff
+        altname enp2s1
+    3: ens37: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP mode DEFAULT group default qlen 1000
+        link/ether 00:0c:29:d8:90:46 brd ff:ff:ff:ff:ff:ff
+        altname enp2s5
+    ```
+6. 这一步我要把ens37移到34634 namespace中。可以看到ens37已经移走了
+    ``` shell
+    [root@localhost ~]# ip link set ens37 netns 34634
+    [root@localhost ~]# ip link
+    1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000
+        link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    2: ens33: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP mode DEFAULT group default qlen 1000
+        link/ether 00:0c:29:d8:90:3c brd ff:ff:ff:ff:ff:ff
+        altname enp2s1
+    ```
+7. 回到namespace的终端，我们发现namespace中多了ens37设备，也可以看到ens37是关闭(down)状态
+    ``` shell
+    netns# ip link
+    1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000
+        link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    3: ens37: <BROADCAST,MULTICAST> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000
+        link/ether 00:0c:29:d8:90:46 brd ff:ff:ff:ff:ff:ff
+        altname enp2s5
+    ```
+8. 我们启用ens37后，发现还是无法联通网络。这是因为我们还没有给ens37配置IP
+    ``` shell
+    netns# ip link set ens37 up
+    netns# ping 8.8.8.8
+    ping: connect: Network is unreachable
+    ```
+9. 根据自己的IP情况配置好ens37的IP，发现可以ping通 192.168.192.131，但是还是无法ping通 8.8.8.8
+    ``` shell
+    netns# ip addr add 192.168.192.131/24 dev ens37 
+    netns# ping 192.168.192.131
+    PING 192.168.192.131 (192.168.192.131) 56(84) bytes of data.
+    64 bytes from 192.168.192.131: icmp_seq=1 ttl=64 time=0.031 ms
+    ```
+    ``` shell
+    netns# ping 8.8.8.8
+    ping: connect: Network is unreachable
+    netns# ip route
+    192.168.192.0/24 dev ens37 proto kernel scope link src 192.168.192.131 
+    ```
+10. 根据上面最后一个命令`ip route`，我们看到只有一条录音信息，我们只能访问`192.168.192.0/24`网段。我们添加一条通过`192.168.192.2`的默认路由
+    ``` shell
+    netns# ip route add default via 192.168.192.2
+    netns# ping 8.8.8.8
+    PING 8.8.8.8 (8.8.8.8) 56(84) bytes of data.
+    64 bytes from 8.8.8.8: icmp_seq=1 ttl=128 time=32.5 ms
+    ```
+11. 在第9步，如果网络里面有dhcp服务器，也可以通过dhcp配置ens37的IP。注意：dhcp client一般是后台运行的，记得在退出namespace时，手动销毁dhcp client的后台进程，如果创建了`PID namespace`,系统可以代劳杀死dhcp client。
+
+### 方法二：使用虚拟以太网设备(veth)
+veth都是成对使用的，就像一座桥，连接两个namespace，发送给一端的数据，会立即传输到另外一端。当namespace销毁时，它包含的veth也会被销毁。
+
+1. 创建network namespace
+    ``` shell
+    [root@localhost ~]# PS1="netns# " unshare -m -n --fork
+    netns# 
+    ```
+2. 测试网络功能
+    ``` shell
+    netns# ping 8.8.8.8
+    ping: connect: Network is unreachable
+    netns# ping 127.0.0.1
+    ping: connect: Network is unreachable
+    ```
+3. 启用`lo`网络,可以使用127.0.0.1
+    ``` shell
+    netns# ip link set lo up
+    netns# ping 127.0.0.1
+    PING 127.0.0.1 (127.0.0.1) 56(84) bytes of data.
+    64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time=0.096 ms
+    ```
+4. 查看`bash`的pid,在下面的指令中，使用 2911 指代`network namespace`
+    ````
+    netns# echo $$
+    2911
+    ````
+5. 在打开一个root权限的Terminal,创建一对veth。我们看到索引4和5两个veth设备
+```
+[root@localhost ~]# ip link add veth_a type veth peer name veth_b
+[root@localhost ~]# ip link list
+    1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000
+        link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    2: ens33: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP mode DEFAULT group default qlen 1000
+        link/ether 00:0c:29:d8:90:3c brd ff:ff:ff:ff:ff:ff
+        altname enp2s1
+    3: ens37: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP mode DEFAULT group default qlen 1000
+        link/ether 00:0c:29:d8:90:46 brd ff:ff:ff:ff:ff:ff
+        altname enp2s5
+    4: veth_b@veth_a: <BROADCAST,MULTICAST,M-DOWN> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000
+        link/ether fa:53:53:42:42:49 brd ff:ff:ff:ff:ff:ff
+    5: veth_a@veth_b: <BROADCAST,MULTICAST,M-DOWN> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000
+        link/ether ce:ea:8a:1f:b1:1b brd ff:ff:ff:ff:ff:ff
+```
+6. 和操作物理设备一样，我们把 veth_a 移到 2911 namespace中。我们可以看到 veth_a 已经从root namespace中移走了
+    ```
+    [root@localhost ~]# ip link set veth_a netns 2911
+    [root@localhost ~]# ip link list
+    1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000
+        link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    2: ens33: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP mode DEFAULT group default qlen 1000
+        link/ether 00:0c:29:d8:90:3c brd ff:ff:ff:ff:ff:ff
+        altname enp2s1
+    3: ens37: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP mode DEFAULT group default qlen 1000
+        link/ether 00:0c:29:d8:90:46 brd ff:ff:ff:ff:ff:ff
+        altname enp2s5
+    4: veth_b@if5: <BROADCAST,MULTICAST> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000
+        link/ether fa:53:53:42:42:49 brd ff:ff:ff:ff:ff:ff link-netnsid 0
+    ```
+7. 分别配置veth_a和veth_b的IP为：10.60.0.2/24, 10.60.0.1/24,并且给Network namespace添加默认路由 10.60.0.1
+    ```
+    netns# ip addr add 10.60.0.2/24 dev veth_a
+    netns# ip route add default via 10.60.0.1
+    ```
+    ```
+    [root@localhost ~]# ip addr add 10.60.0.1/24 dev veth_b
+    ```
+8. 试试互相ping一下，发现10.60.0.0/24互相已经可以ping通了。但是在nemesapce中还是无法ping通外网
+9. 按照我们的网络规划 10.60.0.0/24 子网在 192.168.192.0/24 下面，需要通过SNAT转换才能访问外网，我们给 root namespace增加一条NAT转换规则。下面简单介绍下这条 iptables 命令： `-t nat`表示NAT表， `-A POSTROUTING`在`POSTROUTING`链上增加规则，`-s` 表示源地址是 `10.60.0.0/16` 报文，`!-o veth_b`表示不通过 `veth_b` 网卡发出的报文，`-j SNAT`表示执行 SNAT 转换，`--to-source 192.168.192.129`表示把报文转成从 `192.168.192.129` 源地址发出。这样就可以访问外网IP了。
+```
+[root@localhost ~]# iptables -t nat -A POSTROUTING -s 10.60.0.0/16 ! -o veth_b -j SNAT --to-source 192.168.192.129
+```
+10. 如果发现还是无法访问外网，可能的原因需要开启IP转发
+```
+[root@localhost ~]# echo 1 > /proc/sys/net/ipv4/ip_forward
+```
+
+### 在配置的时候遇到几个问题
+1. veth配置成物理网卡的网段，导致机器断网了
+2. 上面使用了veth的两端直接通信，如果在同一台机器上创建多个`Network namespace`，它们之间需要互相通信，那么iptables的配置就会特别复杂。Linux提供了网桥(虚拟交互机)可以简化相关的配置。
+
+## 其他
+### 查看当前系统的所有namespace：lsns
+
 参考：
 1. https://man7.org/linux/man-pages/man7/namespaces.7.html
 2. https://man7.org/linux/man-pages/man2/ioctl_ns.2.html
@@ -248,3 +443,4 @@ static void settime(time_t offset, clockid_t clk_id)
 6. https://man7.org/linux/man-pages/man7/pid_namespaces.7.html
 7. https://man7.org/linux/man-pages/man7/user_namespaces.7.html
 8. https://man7.org/linux/man-pages/man7/mount_namespaces.7.html
+9. https://man7.org/linux/man-pages/man7/network_namespaces.7.html
