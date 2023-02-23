@@ -522,6 +522,12 @@ veth都是成对使用的，就像一座桥，连接两个namespace，发送给�
 
  - nsenter: 在指定的 namespace 中执行程序
 
+    可以通过 `/proc/[pid]/ns/`目录的文件指定 namespace, 也可以指定`pid`指定该进程的 namespace
+
+ - cpu_killer: 销毁CPU
+
+    使用方法 `cpu_killer [number]`,使用 `[number]` 指定需要销毁多少个核。本人使用这个工具测试`cgroup`的功能。
+
 ## 参考：
 
 1. https://man7.org/linux/man-pages/man7/namespaces.7.html
